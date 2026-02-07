@@ -31,9 +31,6 @@
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"
   },
-  "peerDependencies": {
-    "crypto": "*"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/aledan2809/revolut-integration.git"

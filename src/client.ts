@@ -62,7 +62,7 @@ export class RevolutClient {
       )
     }
 
-    return response.json()
+    return response.json() as Promise<RevolutOrder>
   }
 
   /**
@@ -83,7 +83,7 @@ export class RevolutClient {
       )
     }
 
-    return response.json()
+    return response.json() as Promise<RevolutOrder>
   }
 
   /**
@@ -105,7 +105,7 @@ export class RevolutClient {
       )
     }
 
-    return response.json()
+    return response.json() as Promise<RevolutOrder>
   }
 
   /**
@@ -142,7 +142,7 @@ export class RevolutClient {
       )
     }
 
-    return response.json()
+    return response.json() as Promise<RefundResult>
   }
 
   /**
@@ -171,7 +171,7 @@ export class RevolutClient {
       )
     }
 
-    return response.json()
+    return response.json() as Promise<RevolutOrder>
   }
 
   /**
