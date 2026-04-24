@@ -179,11 +179,15 @@ export class RevolutClient {
    * @param payload - Raw webhook body as string
    * @param signature - Signature from Revolut-Signature header
    * @returns true if signature is valid
+   * @throws RevolutError if webhook secret is not configured
    */
   verifyWebhookSignature(payload: string, signature: string): boolean {
     if (!this.webhookSecret) {
-      console.warn('Webhook secret not configured, skipping verification')
-      return true
+      throw new RevolutError(
+        'Webhook secret not configured. Set webhookSecret in RevolutConfig to verify webhook authenticity.',
+        0,
+        'WEBHOOK_SECRET_MISSING'
+      )
     }
 
     try {
@@ -202,7 +206,8 @@ export class RevolutClient {
       }
       return result === 0
     } catch (error) {
-      console.error('Signature verification error:', error)
+      // Signature verification failed silently - return false
+      // Libraries should not log directly to console
       return false
     }
   }
@@ -218,14 +223,14 @@ export class RevolutClient {
     signature: string
   ): RevolutWebhookPayload | null {
     if (!this.verifyWebhookSignature(rawBody, signature)) {
-      console.error('Invalid webhook signature')
+      // Invalid signature - return null (caller should handle)
       return null
     }
 
     try {
       return JSON.parse(rawBody) as RevolutWebhookPayload
     } catch (error) {
-      console.error('Failed to parse webhook payload:', error)
+      // Invalid JSON - return null (caller should handle)
       return null
     }
   }

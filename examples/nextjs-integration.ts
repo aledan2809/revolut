@@ -1,9 +1,27 @@
 /**
  * Example: Next.js API Route Integration
  *
- * Copy these files to your Next.js project:
- * - /app/api/payments/create/route.ts
- * - /app/api/webhooks/revolut/route.ts
+ * This example shows how to integrate the Revolut package with Next.js App Router.
+ *
+ * SETUP STEPS:
+ *
+ * 1. Install dependencies:
+ *    npm install @aledan/revolut-integration
+ *
+ * 2. Set environment variables in .env.local:
+ *    REVOLUT_API_KEY=your_api_key_here
+ *    REVOLUT_WEBHOOK_SECRET=your_webhook_secret_here
+ *    NEXT_PUBLIC_URL=https://yourdomain.com
+ *
+ * 3. Copy these files to your Next.js project:
+ *    - /lib/revolut-client.ts
+ *    - /app/api/payments/create/route.ts
+ *    - /app/api/webhooks/revolut/route.ts
+ *
+ * 4. Configure Revolut webhook URL in Business Dashboard:
+ *    https://yourdomain.com/api/webhooks/revolut
+ *
+ * 5. Uncomment and adapt database code for your schema
  */
 
 // ============================================
@@ -39,59 +57,77 @@ import { generateOrderRef } from '@aledan/revolut-integration'
 export async function POST(req: Request) {
   try {
     // 1. Verify user is authenticated
-    // const session = await getServerSession()
+    // TODO: Uncomment and configure authentication for your project
+    // const session = await getServerSession(authOptions) // Configure authOptions
     // if (!session?.user) {
     //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     // }
 
     // 2. Parse request
-    const { apartamentId, suma, luna, an } = await req.json()
+    const { apartmentId, amount, month, year, customerEmail } = await req.json()
 
-    // 3. Validate amount
-    if (!suma || suma <= 0) {
+    // 3. Validate required fields
+    if (!amount || amount <= 0) {
       return NextResponse.json(
         { error: 'Invalid amount' },
         { status: 400 }
       )
     }
 
-    // 4. Get customer email from database
-    // const apartament = await db.apartament.findUnique({
-    //   where: { id: apartamentId },
-    //   include: { proprietari: { include: { user: true } } }
+    if (!customerEmail || !customerEmail.includes('@')) {
+      return NextResponse.json(
+        { error: 'Valid customer email is required' },
+        { status: 400 }
+      )
+    }
+
+    // 4. Get customer details from database (if needed)
+    // TODO: Implement your database logic here
+    // Example for Prisma:
+    // const customer = await db.customer.findUnique({
+    //   where: { id: customerId },
+    //   select: { email: true, name: true }
     // })
-    // const customerEmail = apartament?.proprietari[0]?.user?.email
 
     // 5. Create Revolut order
     const client = getRevolutClient()
-    const orderRef = generateOrderRef(`APT-${apartamentId}`)
+    const orderRef = generateOrderRef(apartmentId ? `APT-${apartmentId}` : 'PAY')
 
     const order = await client.createOrder({
-      amount: suma,
+      amount: amount,
       merchantOrderRef: orderRef,
-      customerEmail: 'customer@example.com', // customerEmail
-      description: `Plată întreținere ${luna}/${an}`,
-      redirectUrl: `${process.env.NEXT_PUBLIC_URL}/plata/succes?ref=${orderRef}`,
-      cancelUrl: `${process.env.NEXT_PUBLIC_URL}/plata/anulat`,
+      customerEmail: customerEmail,
+      description: `Payment ${month ? `for ${month}/${year}` : `- ${orderRef}`}`,
+      redirectUrl: `${process.env.NEXT_PUBLIC_URL}/payment/success?ref=${orderRef}`,
+      cancelUrl: `${process.env.NEXT_PUBLIC_URL}/payment/cancelled`,
+      metadata: {
+        apartmentId: apartmentId || '',
+        month: month || '',
+        year: year || '',
+      }
     })
 
     // 6. Save order to database for tracking
-    // await db.plataRevolt.create({
+    // TODO: Implement your database logic here
+    // Example for Prisma:
+    // await db.payment.create({
     //   data: {
-    //     orderId: order.id,
+    //     revolutOrderId: order.id,
     //     orderRef,
-    //     apartamentId,
-    //     suma,
-    //     luna,
-    //     an,
+    //     apartmentId,
+    //     amount,
+    //     customerEmail,
     //     status: 'PENDING',
+    //     createdAt: new Date(),
     //   }
     // })
 
     // 7. Return checkout URL
     return NextResponse.json({
+      success: true,
       checkoutUrl: order.checkout_url,
       orderRef,
+      orderId: order.id,
     })
   } catch (error) {
     console.error('Payment creation error:', error)
@@ -107,9 +143,9 @@ export async function POST(req: Request) {
 // ============================================
 
 // import { db } from '@/lib/db'
-// import { getRevolutClient } from '@/lib/revolut-client'
+import { getRevolutClient } from '@/lib/revolut-client'
 
-export async function POST_webhook(req: Request) {
+export async function POST(req: Request) {
   try {
     const client = getRevolutClient()
 
@@ -118,10 +154,16 @@ export async function POST_webhook(req: Request) {
     const signature = req.headers.get('Revolut-Signature') || ''
 
     // 2. Verify and parse webhook
-    const payload = client.parseWebhook(rawBody, signature)
-    if (!payload) {
-      console.error('Invalid webhook signature')
-      return new Response('Invalid signature', { status: 401 })
+    let payload
+    try {
+      payload = client.parseWebhook(rawBody, signature)
+      if (!payload) {
+        console.error('Invalid webhook signature or malformed JSON')
+        return new Response('Invalid webhook', { status: 401 })
+      }
+    } catch (error) {
+      console.error('Webhook verification failed:', error.message)
+      return new Response('Webhook verification failed', { status: 401 })
     }
 
     console.log('Revolut webhook received:', payload.event, payload.order_id)
@@ -130,17 +172,20 @@ export async function POST_webhook(req: Request) {
     switch (payload.event) {
       case 'ORDER_COMPLETED': {
         // Payment successful - update database
-        // await db.plataRevolt.update({
+        // TODO: Implement your database logic here
+        // Example for Prisma:
+        // await db.payment.update({
         //   where: { orderRef: payload.merchant_order_ext_ref },
         //   data: {
         //     status: 'COMPLETED',
+        //     revolutOrderId: payload.order_id,
         //     completedAt: new Date(),
         //   }
         // })
 
-        // Create actual payment record
-        // await createPaymentRecord(payload.merchant_order_ext_ref!)
-        console.log('Payment completed:', payload.merchant_order_ext_ref)
+        console.log('✅ Payment completed:', payload.merchant_order_ext_ref)
+
+        // TODO: Add your business logic here (send confirmation email, update inventory, etc.)
         break
       }
 
@@ -148,19 +193,45 @@ export async function POST_webhook(req: Request) {
       case 'ORDER_PAYMENT_FAILED':
       case 'ORDER_PAYMENT_DECLINED': {
         // Payment failed - update database
-        // await db.plataRevolt.update({
+        // TODO: Implement your database logic here
+        // await db.payment.update({
         //   where: { orderRef: payload.merchant_order_ext_ref },
-        //   data: { status: 'FAILED' }
+        //   data: {
+        //     status: 'FAILED',
+        //     failureReason: payload.event
+        //   }
         // })
-        console.log('Payment failed:', payload.event, payload.merchant_order_ext_ref)
+
+        console.log('❌ Payment failed:', payload.event, payload.merchant_order_ext_ref)
+
+        // TODO: Add your business logic here (send failure notification, release reserved items, etc.)
+        break
+      }
+
+      case 'ORDER_PAYMENT_AUTHORISED': {
+        // Payment authorized but not yet captured (for two-phase payments)
+        // TODO: Decide whether to capture automatically or manually
+        // For auto-capture:
+        // const captureResult = await client.captureOrder(payload.order_id)
+
+        console.log('🔒 Payment authorized:', payload.order_id)
         break
       }
 
       case 'REFUND_COMPLETED': {
-        // Refund processed
-        console.log('Refund completed:', payload.order_id)
+        // Refund processed successfully
+        // TODO: Update your database
+        // await db.refund.update({
+        //   where: { revolutOrderId: payload.order_id },
+        //   data: { status: 'COMPLETED' }
+        // })
+
+        console.log('💰 Refund completed:', payload.order_id)
         break
       }
+
+      default:
+        console.log('🔄 Unhandled webhook event:', payload.event)
     }
 
     return new Response('OK', { status: 200 })
