@@ -56,4 +56,8 @@ export {
   isOrderSuccessful,
   calculateTVA,
   addTVA,
+  getStandardTVARate,
+  DEFAULT_TVA_RATE,
+  LEGACY_TVA_RATE,
+  TVA_RATE_CHANGE_DATE,
 } from './utils'

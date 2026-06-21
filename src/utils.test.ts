@@ -12,6 +12,9 @@ import {
   isOrderSuccessful,
   calculateTVA,
   addTVA,
+  getStandardTVARate,
+  DEFAULT_TVA_RATE,
+  LEGACY_TVA_RATE,
 } from './utils'
 
 describe('Utils', () => {
@@ -165,8 +168,22 @@ describe('Utils', () => {
   })
 
   describe('calculateTVA', () => {
-    it('should calculate TVA from gross amount with default 19% rate', () => {
-      const result = calculateTVA(119)
+    it('should calculate TVA from gross amount with default 21% rate', () => {
+      // Romania's standard VAT is 21% since 2025-08-01
+      const result = calculateTVA(121)
+
+      expect(result.gross).toBe(121)
+      expect(result.net).toBe(100)
+      expect(result.vat).toBe(21)
+    })
+
+    it('should use 0.21 as the exported default rate', () => {
+      expect(DEFAULT_TVA_RATE).toBe(0.21)
+      expect(LEGACY_TVA_RATE).toBe(0.19)
+    })
+
+    it('should still support the legacy 19% rate explicitly (historical)', () => {
+      const result = calculateTVA(119, LEGACY_TVA_RATE)
 
       expect(result.gross).toBe(119)
       expect(result.net).toBe(100)
@@ -186,8 +203,8 @@ describe('Utils', () => {
       const result = calculateTVA(123.45)
 
       expect(result.gross).toBe(123.45)
-      expect(result.net).toBe(103.74) // 123.45 / 1.19 = 103.739..., rounded to 103.74
-      expect(result.vat).toBe(19.71)   // 123.45 - 103.74 = 19.71
+      expect(result.net).toBe(102.02) // 123.45 / 1.21 = 102.0247..., rounded to 102.02
+      expect(result.vat).toBe(21.43)   // 123.45 - 102.02 = 21.43
     })
 
     it('should round to 2 decimal places', () => {
@@ -213,8 +230,17 @@ describe('Utils', () => {
   })
 
   describe('addTVA', () => {
-    it('should add TVA to net amount with default 19% rate', () => {
+    it('should add TVA to net amount with default 21% rate', () => {
+      // Romania's standard VAT is 21% since 2025-08-01
       const result = addTVA(100)
+
+      expect(result.net).toBe(100)
+      expect(result.vat).toBe(21)
+      expect(result.gross).toBe(121)
+    })
+
+    it('should still support the legacy 19% rate explicitly (historical)', () => {
+      const result = addTVA(100, LEGACY_TVA_RATE)
 
       expect(result.net).toBe(100)
       expect(result.vat).toBe(19)
@@ -234,8 +260,8 @@ describe('Utils', () => {
       const result = addTVA(123.45)
 
       expect(result.net).toBe(123.45)
-      expect(result.vat).toBe(23.46) // 123.45 * 0.19 = 23.4555, rounded to 23.46
-      expect(result.gross).toBe(146.91) // 123.45 + 23.46 = 146.91
+      expect(result.vat).toBe(25.92) // 123.45 * 0.21 = 25.9245, rounded to 25.92
+      expect(result.gross).toBe(149.37) // 123.45 + 25.92 = 149.37
     })
 
     it('should round to 2 decimal places', () => {
@@ -255,7 +281,7 @@ describe('Utils', () => {
 
       const smallResult = addTVA(0.01)
       expect(smallResult.net).toBe(0.01)
-      expect(smallResult.vat).toBe(0) // 0.01 * 0.19 = 0.0019, rounded to 0
+      expect(smallResult.vat).toBe(0) // 0.01 * 0.21 = 0.0021, rounded to 0
       expect(smallResult.gross).toBe(0.01)
     })
 
@@ -266,6 +292,23 @@ describe('Utils', () => {
 
       // Should be approximately equal (allowing for rounding differences)
       expect(Math.abs(calculated.net - netAmount)).toBeLessThan(0.01)
+    })
+  })
+
+  describe('getStandardTVARate', () => {
+    it('should return 21% on/after 2025-08-01', () => {
+      expect(getStandardTVARate(new Date('2025-08-01T00:00:00Z'))).toBe(0.21)
+      expect(getStandardTVARate(new Date('2026-01-15T00:00:00Z'))).toBe(0.21)
+    })
+
+    it('should return 19% before 2025-08-01 (historical)', () => {
+      expect(getStandardTVARate(new Date('2025-07-31T23:59:59Z'))).toBe(0.19)
+      expect(getStandardTVARate(new Date('2024-01-01T00:00:00Z'))).toBe(0.19)
+    })
+
+    it('should default to the current standard rate (21%)', () => {
+      // Current date is well past 2025-08-01
+      expect(getStandardTVARate()).toBe(0.21)
     })
   })
 })

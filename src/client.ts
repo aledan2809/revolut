@@ -13,7 +13,7 @@ import type {
   RevolutWebhookPayload,
 } from './types'
 import { RevolutError } from './types'
-import { createHmac } from 'crypto'
+import { createHmac, timingSafeEqual } from 'crypto'
 
 export class RevolutClient {
   private apiKey: string
@@ -175,13 +175,35 @@ export class RevolutClient {
   }
 
   /**
-   * Verify webhook signature using HMAC-SHA256
+   * Verify a Revolut webhook signature using HMAC-SHA256.
+   *
+   * Conformant with the Revolut Merchant API webhook spec:
+   * https://developer.revolut.com/docs/guides/merchant/monitor-and-observe/webhooks/verify-the-payload-signature
+   *
+   * When a `timestamp` (the `Revolut-Request-Timestamp` header) is supplied,
+   * the signed string is `v1.{timestamp}.{rawPayload}` and the result is
+   * compared (constant-time) against any `v1=` value parsed from the
+   * `Revolut-Signature` header. The header may carry several comma-separated
+   * `v1=...` values (e.g. during secret rotation) — a match on any one passes.
+   * Replay protection rejects requests whose timestamp is older than
+   * `toleranceSeconds` (default 300s = 5 minutes).
+   *
+   * When no `timestamp` is supplied, falls back to the legacy behaviour of
+   * HMAC-ing the raw payload alone (backward compatible).
+   *
    * @param payload - Raw webhook body as string
-   * @param signature - Signature from Revolut-Signature header
+   * @param signature - Value of the `Revolut-Signature` header (may be `v1=<hex>` or raw hex)
+   * @param timestamp - Value of the `Revolut-Request-Timestamp` header (ms epoch). Enables spec-conformant + replay-protected verification when provided.
+   * @param toleranceSeconds - Max age of the timestamp before the request is rejected as a replay (default 300s)
    * @returns true if signature is valid
    * @throws RevolutError if webhook secret is not configured
    */
-  verifyWebhookSignature(payload: string, signature: string): boolean {
+  verifyWebhookSignature(
+    payload: string,
+    signature: string,
+    timestamp?: string | number,
+    toleranceSeconds = 300
+  ): boolean {
     if (!this.webhookSecret) {
       throw new RevolutError(
         'Webhook secret not configured. Set webhookSecret in RevolutConfig to verify webhook authenticity.',
@@ -191,20 +213,42 @@ export class RevolutClient {
     }
 
     try {
-      const expectedSignature = createHmac('sha256', this.webhookSecret)
-        .update(payload)
-        .digest('hex')
-
-      // Constant-time comparison to prevent timing attacks
-      if (expectedSignature.length !== signature.length) {
+      // Candidate hex signatures from the header. The Revolut-Signature header
+      // may contain multiple comma-separated values such as
+      // "v1=abc...,v1=def..." (secret rotation). Bare hex is also accepted for
+      // backward compatibility with the legacy header format.
+      const candidates = this.parseSignatureCandidates(signature)
+      if (candidates.length === 0) {
         return false
       }
 
-      let result = 0
-      for (let i = 0; i < expectedSignature.length; i++) {
-        result |= expectedSignature.charCodeAt(i) ^ signature.charCodeAt(i)
+      let signedPayload: string
+
+      if (timestamp !== undefined && timestamp !== null && `${timestamp}` !== '') {
+        // Replay protection: reject timestamps outside the tolerance window.
+        const ts = Number(timestamp)
+        if (!Number.isFinite(ts)) {
+          return false
+        }
+        const ageSeconds = Math.abs(Date.now() - ts) / 1000
+        if (ageSeconds > toleranceSeconds) {
+          return false
+        }
+        // Spec-conformant signed string: "v1.{timestamp}.{rawPayload}".
+        signedPayload = `v1.${timestamp}.${payload}`
+      } else {
+        // Legacy fallback: HMAC the raw payload alone.
+        signedPayload = payload
       }
-      return result === 0
+
+      const expectedSignature = createHmac('sha256', this.webhookSecret)
+        .update(signedPayload)
+        .digest('hex')
+
+      // Constant-time comparison against each candidate.
+      return candidates.some((candidate) =>
+        this.constantTimeEquals(expectedSignature, candidate)
+      )
     } catch (error) {
       // Signature verification failed silently - return false
       // Libraries should not log directly to console
@@ -213,16 +257,69 @@ export class RevolutClient {
   }
 
   /**
-   * Parse and verify a webhook payload
+   * Extract candidate hex signatures from a Revolut-Signature header value.
+   * Supports "v1=<hex>" (one or more, comma-separated) and bare "<hex>".
+   */
+  private parseSignatureCandidates(signature: string): string[] {
+    if (!signature) {
+      return []
+    }
+    const candidates: string[] = []
+    for (const part of signature.split(',')) {
+      const trimmed = part.trim()
+      if (!trimmed) {
+        continue
+      }
+      if (trimmed.startsWith('v1=')) {
+        const value = trimmed.slice(3).trim()
+        if (value) {
+          candidates.push(value)
+        }
+      } else {
+        // Bare hex (legacy header format) — keep as-is.
+        candidates.push(trimmed)
+      }
+    }
+    return candidates
+  }
+
+  /**
+   * Constant-time comparison of two hex strings to prevent timing attacks.
+   */
+  private constantTimeEquals(expected: string, provided: string): boolean {
+    if (expected.length !== provided.length) {
+      return false
+    }
+    try {
+      return timingSafeEqual(Buffer.from(expected), Buffer.from(provided))
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Parse and verify a webhook payload.
+   *
    * @param rawBody - Raw request body
-   * @param signature - Revolut-Signature header value
+   * @param signature - Value of the `Revolut-Signature` header
+   * @param timestamp - Value of the `Revolut-Request-Timestamp` header (enables spec-conformant + replay-protected verification when provided)
+   * @param toleranceSeconds - Max age of the timestamp before rejection (default 300s)
    * @returns Parsed webhook payload or null if invalid
    */
   parseWebhook(
     rawBody: string,
-    signature: string
+    signature: string,
+    timestamp?: string | number,
+    toleranceSeconds = 300
   ): RevolutWebhookPayload | null {
-    if (!this.verifyWebhookSignature(rawBody, signature)) {
+    if (
+      !this.verifyWebhookSignature(
+        rawBody,
+        signature,
+        timestamp,
+        toleranceSeconds
+      )
+    ) {
       // Invalid signature - return null (caller should handle)
       return null
     }

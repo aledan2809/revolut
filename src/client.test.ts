@@ -208,6 +208,116 @@ describe('RevolutClient', () => {
       const result = client.verifyWebhookSignature(payload, shortSignature)
       expect(result).toBe(false)
     })
+
+    // --- Spec-conformant v1.{timestamp}.{payload} format ---
+
+    const crypto = require('crypto')
+    const signV1 = (payload: string, timestamp: string | number): string => {
+      const hex = crypto
+        .createHmac('sha256', 'test-webhook-secret')
+        .update(`v1.${timestamp}.${payload}`)
+        .digest('hex')
+      return `v1=${hex}`
+    }
+
+    it('should verify a conformant v1.{timestamp}.{payload} signature', () => {
+      const payload = '{"event":"ORDER_COMPLETED","order_id":"123"}'
+      const timestamp = Date.now()
+      const header = signV1(payload, timestamp)
+
+      const result = client.verifyWebhookSignature(payload, header, timestamp)
+      expect(result).toBe(true)
+    })
+
+    it('should accept a v1=<hex> header without the v1= prefix being computed into the payload', () => {
+      const payload = '{"event":"ORDER_COMPLETED"}'
+      const timestamp = Date.now()
+      const header = signV1(payload, timestamp)
+
+      // header carries the "v1=" prefix; verifier must strip it before compare
+      expect(header.startsWith('v1=')).toBe(true)
+      expect(
+        client.verifyWebhookSignature(payload, header, timestamp)
+      ).toBe(true)
+    })
+
+    it('should accept any value from a multi-value (comma-separated) signature header', () => {
+      const payload = '{"event":"ORDER_COMPLETED"}'
+      const timestamp = Date.now()
+      const valid = signV1(payload, timestamp)
+      const bogus = 'v1=' + '0'.repeat(64)
+
+      // valid second
+      expect(
+        client.verifyWebhookSignature(payload, `${bogus},${valid}`, timestamp)
+      ).toBe(true)
+      // valid first
+      expect(
+        client.verifyWebhookSignature(payload, `${valid},${bogus}`, timestamp)
+      ).toBe(true)
+    })
+
+    it('should reject a conformant signature whose timestamp is outside the replay window', () => {
+      const payload = '{"event":"ORDER_COMPLETED"}'
+      const oldTimestamp = Date.now() - 6 * 60 * 1000 // 6 minutes ago (> 300s)
+      const header = signV1(payload, oldTimestamp)
+
+      const result = client.verifyWebhookSignature(payload, header, oldTimestamp)
+      expect(result).toBe(false)
+    })
+
+    it('should accept a stale timestamp when toleranceSeconds is widened', () => {
+      const payload = '{"event":"ORDER_COMPLETED"}'
+      const oldTimestamp = Date.now() - 6 * 60 * 1000 // 6 minutes ago
+      const header = signV1(payload, oldTimestamp)
+
+      // 600s tolerance covers the 6-minute-old timestamp
+      const result = client.verifyWebhookSignature(
+        payload,
+        header,
+        oldTimestamp,
+        600
+      )
+      expect(result).toBe(true)
+    })
+
+    it('should reject when payload was tampered (timestamp/sig mismatch)', () => {
+      const payload = '{"event":"ORDER_COMPLETED"}'
+      const timestamp = Date.now()
+      const header = signV1(payload, timestamp)
+
+      const tampered = '{"event":"ORDER_FAILED"}'
+      expect(
+        client.verifyWebhookSignature(tampered, header, timestamp)
+      ).toBe(false)
+    })
+
+    it('should reject a non-finite timestamp', () => {
+      const payload = '{"event":"ORDER_COMPLETED"}'
+      const header = signV1(payload, 'not-a-number')
+
+      const result = client.verifyWebhookSignature(
+        payload,
+        header,
+        'not-a-number'
+      )
+      expect(result).toBe(false)
+    })
+
+    it('should remain backward-compatible (legacy raw-payload HMAC) when no timestamp is given', () => {
+      const payload = '{"event":"ORDER_COMPLETED","order_id":"123"}'
+      const legacyHex = crypto
+        .createHmac('sha256', 'test-webhook-secret')
+        .update(payload)
+        .digest('hex')
+
+      // bare hex, no timestamp
+      expect(client.verifyWebhookSignature(payload, legacyHex)).toBe(true)
+      // also accepts the v1= wrapper around the legacy raw-payload HMAC
+      expect(
+        client.verifyWebhookSignature(payload, `v1=${legacyHex}`)
+      ).toBe(true)
+    })
   })
 
   describe('parseWebhook', () => {
@@ -243,6 +353,28 @@ describe('RevolutClient', () => {
       vi.spyOn(client, 'verifyWebhookSignature').mockReturnValue(true)
 
       const result = client.parseWebhook('invalid-json', 'valid-signature')
+      expect(result).toBeNull()
+    })
+
+    it('should forward timestamp + tolerance to verifyWebhookSignature', () => {
+      const spy = vi
+        .spyOn(client, 'verifyWebhookSignature')
+        .mockReturnValue(true)
+
+      const rawBody = JSON.stringify({ event: 'ORDER_COMPLETED' })
+      client.parseWebhook(rawBody, 'v1=sig', 1234567890, 600)
+
+      expect(spy).toHaveBeenCalledWith(rawBody, 'v1=sig', 1234567890, 600)
+    })
+
+    it('should return null when a conformant signature fails replay check', () => {
+      // Real (un-mocked) verification with an expired timestamp
+      const oldTimestamp = Date.now() - 10 * 60 * 1000
+      const result = client.parseWebhook(
+        '{"event":"ORDER_COMPLETED"}',
+        'v1=' + '0'.repeat(64),
+        oldTimestamp
+      )
       expect(result).toBeNull()
     })
   })
